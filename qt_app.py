@@ -1,10 +1,10 @@
 import sys
 import re
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QTextEdit, QDockWidget, QTreeView, 
-                             QAction, QVBoxLayout, QWidget, QMenuBar, QToolBar, QPushButton, 
-                             QStatusBar, QLabel, QFileDialog, QTreeWidget, QTreeWidgetItem)
-from PyQt5.QtCore import Qt, QRegExp
-from PyQt5.QtGui import QSyntaxHighlighter, QTextCharFormat, QFont, QColor, QIcon
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QPlainTextEdit, QDockWidget, QTreeWidget, 
+                             QAction, QVBoxLayout, QMenuBar, QToolBar, QStatusBar, QFileDialog, 
+                             QTreeWidgetItem, QTabWidget, QWidget, QTextEdit, QCompleter)
+from PyQt5.QtCore import Qt, QRect, QSize, pyqtSignal
+from PyQt5.QtGui import QSyntaxHighlighter, QTextCharFormat, QFont, QColor, QPainter, QIcon, QTextCursor
 
 class SyntaxHighlighter(QSyntaxHighlighter):
     def __init__(self, parent=None):
@@ -17,24 +17,171 @@ class SyntaxHighlighter(QSyntaxHighlighter):
 
         keywords = ["inicio", "fin", "funcion", "retornar", "var", "mientras", "si", "entonces", "fin_si", "sino", "para", "imprimir"]
         for word in keywords:
-            pattern = QRegExp("\\b" + word + "\\b")
+            pattern = re.compile(f"\\b{word}\\b")
             rule = (pattern, keyword_format)
             self._highlighting_rules.append(rule)
 
+        string_format = QTextCharFormat()
+        string_format.setForeground(Qt.darkGreen)
+        self._highlighting_rules.append((re.compile(r'"[^"]*"'), string_format))
+
+        error_format = QTextCharFormat()
+        error_format.setForeground(Qt.red)
+        self._error_format = error_format
+
     def highlightBlock(self, text):
         for pattern, format in self._highlighting_rules:
-            expression = QRegExp(pattern)
-            index = expression.indexIn(text)
-            while index >= 0:
-                length = expression.matchedLength()
-                self.setFormat(index, length, format)
-                index = expression.indexIn(text, index + length)
+            for match in pattern.finditer(text):
+                start, end = match.span()
+                self.setFormat(start, end - start, format)
 
-class CodeEditor(QTextEdit):
+    def highlightError(self, start, end):
+        self.setFormat(start, end - start, self._error_format)
+
+class LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.codeEditor = editor
+
+    def sizeHint(self):
+        return QSize(self.codeEditor.lineNumberAreaWidth(), 0)
+
+    def paintEvent(self, event):
+        self.codeEditor.lineNumberAreaPaintEvent(event)
+
+class CodeEditor(QPlainTextEdit):
+    updateRequest = pyqtSignal(QRect, int)
+    
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFont(QFont("Courier", 10))
         self.highlighter = SyntaxHighlighter(self.document())
+        self.lineNumberArea = LineNumberArea(self)
+
+        self.blockCountChanged.connect(self.updateLineNumberAreaWidth)
+        self.updateRequest.connect(self.updateLineNumberArea)
+        self.cursorPositionChanged.connect(self.highlightCurrentLine)
+
+        self.updateLineNumberAreaWidth(0)
+
+        keywords = ["inicio", "fin", "funcion", "retornar", "var", "mientras", "si", "entonces", "fin_si", "sino", "para", "imprimir"]
+        self.completer = QCompleter(keywords, self)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.setCompleter(self.completer)
+
+    def lineNumberAreaWidth(self):
+        digits = 1
+        max_ = max(1, self.blockCount())
+        while max_ >= 10:
+            max_ //= 10
+            digits += 1
+        space = 3 + self.fontMetrics().horizontalAdvance('9') * digits
+        return space
+
+    def updateLineNumberAreaWidth(self, _):
+        self.setViewportMargins(self.lineNumberAreaWidth(), 0, 0, 0)
+
+    def updateLineNumberArea(self, rect, dy):
+        if dy:
+            self.lineNumberArea.scroll(0, dy)
+        else:
+            self.lineNumberArea.update(0, rect.y(), self.lineNumberArea.width(), rect.height())
+
+        if rect.contains(self.viewport().rect()):
+            self.updateLineNumberAreaWidth(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        self.lineNumberArea.setGeometry(QRect(cr.left(), cr.top(), self.lineNumberAreaWidth(), cr.height()))
+
+    def highlightCurrentLine(self):
+        extraSelections = []
+
+        if not self.isReadOnly():
+            selection = QTextEdit.ExtraSelection()
+            lineColor = QColor(Qt.yellow).lighter(160)
+            selection.format.setBackground(lineColor)
+            selection.format.setProperty(QTextCharFormat.FullWidthSelection, True)
+            selection.cursor = self.textCursor()
+            selection.cursor.clearSelection()
+            extraSelections.append(selection)
+
+        self.setExtraSelections(extraSelections)
+
+    def lineNumberAreaPaintEvent(self, event):
+        painter = QPainter(self.lineNumberArea)
+        painter.fillRect(event.rect(), Qt.lightGray)
+
+        block = self.firstVisibleBlock()
+        blockNumber = block.blockNumber()
+        top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + int(self.blockBoundingRect(block).height())
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                number = str(blockNumber + 1)
+                painter.setPen(Qt.black)
+                painter.drawText(0, top, self.lineNumberArea.width(), self.fontMetrics().height(),
+                                 Qt.AlignRight, number)
+
+            block = block.next()
+            top = bottom
+            bottom = top + int(self.blockBoundingRect(block).height())
+            blockNumber += 1
+
+    def setCompleter(self, completer):
+        completer.setWidget(self)
+        completer.activated.connect(self.insertCompletion)
+        self.completer = completer
+
+    def insertCompletion(self, completion):
+        tc = self.textCursor()
+        extra = len(completion) - len(self.completer.completionPrefix())
+        tc.movePosition(QTextCursor.Left)
+        tc.movePosition(QTextCursor.EndOfWord)
+        tc.insertText(completion[-extra:])
+        self.setTextCursor(tc)
+
+    def focusInEvent(self, event):
+        if self.completer:
+            self.completer.setWidget(self)
+        super().focusInEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.completer and self.completer.popup().isVisible():
+            if event.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab):
+                event.ignore()
+                return
+
+        isShortcut = (event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_E)
+        if not self.completer or not isShortcut:
+            super().keyPressEvent(event)
+
+        ctrlOrShift = event.modifiers() in (Qt.ControlModifier, Qt.ShiftModifier)
+        if not self.completer or (ctrlOrShift and len(event.text()) == 0):
+            return
+
+        eow = "~!@#$%^&*()_+{}|:\"<>?,./;'[]\\-="  # End of word
+        hasModifier = (event.modifiers() != Qt.NoModifier) and not ctrlOrShift
+        completionPrefix = self.textUnderCursor()
+
+        if not isShortcut and (hasModifier or len(event.text()) == 0 or len(completionPrefix) < 1 or event.text()[-1] in eow):
+            self.completer.popup().hide()
+            return
+
+        if completionPrefix != self.completer.completionPrefix():
+            self.completer.setCompletionPrefix(completionPrefix)
+            self.completer.popup().setCurrentIndex(self.completer.completionModel().index(0, 0))
+
+        cr = self.cursorRect()
+        cr.setWidth(self.completer.popup().sizeHintForColumn(0) + self.completer.popup().verticalScrollBar().sizeHint().width())
+        self.completer.complete(cr)
+
+    def textUnderCursor(self):
+        tc = self.textCursor()
+        tc.select(QTextCursor.WordUnderCursor)
+        return tc.selectedText()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -54,7 +201,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, dock_tree)
 
         # Consola de salida
-        self.output_console = QTextEdit()
+        self.output_console = QPlainTextEdit()
         self.output_console.setReadOnly(True)
         dock_console = QDockWidget("Consola de Salida")
         dock_console.setWidget(self.output_console)
@@ -101,17 +248,21 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar()
         self.addToolBar(toolbar)
 
-        open_action = QAction('Abrir', self)
+        open_action = QAction(QIcon("static/open.png"), 'Abrir', self)
         open_action.triggered.connect(self.open_file)
         toolbar.addAction(open_action)
 
-        save_action = QAction('Guardar', self)
+        save_action = QAction(QIcon("static/save.png"), 'Guardar', self)
         save_action.triggered.connect(self.save_file)
         toolbar.addAction(save_action)
 
         run_action = QAction(QIcon("static/flecha.png"), 'Run', self)  # Reemplaza con la ruta a tu ícono
         run_action.triggered.connect(self.run_code)
         toolbar.addAction(run_action)
+
+        analyze_action = QAction(QIcon("static/analyze.png"), 'Analizar', self)  # Reemplaza con la ruta a tu ícono
+        analyze_action.triggered.connect(self.analyze_code)
+        toolbar.addAction(analyze_action)
 
     def open_file(self):
         options = QFileDialog.Options()
@@ -120,7 +271,7 @@ class MainWindow(QMainWindow):
                                                    options=options)
         if file_name:
             with open(file_name, 'r') as file:
-                self.code_editor.setText(file.read())
+                self.code_editor.setPlainText(file.read())
 
     def save_file(self):
         options = QFileDialog.Options()
@@ -145,14 +296,14 @@ class MainWindow(QMainWindow):
                 try:
                     variables[var_name] = int(var_value)
                 except ValueError:
-                    self.output_console.append(f'Error: valor inválido para la variable {var_name}')
+                    self.output_console.appendPlainText(f'Error: valor inválido para la variable {var_name}')
                     return
             elif line.startswith("imprimir"):
                 message = line[len("imprimir"):].strip()
                 if message in variables:
-                    self.output_console.append(str(variables[message]))
+                    self.output_console.appendPlainText(str(variables[message]))
                 else:
-                    self.output_console.append(message)
+                    self.output_console.appendPlainText(message)
             elif line.startswith("si"):
                 condition = line[len("si"):].strip().split("entonces")[0].strip()
                 if "==" in condition:
@@ -166,9 +317,9 @@ class MainWindow(QMainWindow):
                             if inner_line.startswith("imprimir"):
                                 message = inner_line[len("imprimir"):].strip()
                                 if message in variables:
-                                    self.output_console.append(str(variables[message]))
+                                    self.output_console.appendPlainText(str(variables[message]))
                                 else:
-                                    self.output_console.append(message)
+                                    self.output_console.appendPlainText(message)
                             i += 1
             i += 1
 
@@ -194,7 +345,7 @@ class MainWindow(QMainWindow):
             return
         
         # Mostrar resultados
-        self.output_console.append("Análisis completado exitosamente")
+        self.output_console.appendPlainText("Análisis completado exitosamente")
         self.status_bar.showMessage("Análisis completado", 2000)
         
         # Mostrar árbol de sintaxis
@@ -203,12 +354,13 @@ class MainWindow(QMainWindow):
     def lexer(self, code):
         keywords = {"inicio", "fin", "funcion", "retornar", "var", "mientras", "si", "entonces", "fin_si", "sino", "para", "imprimir"}
         token_specification = [
-            ('NUMBER',  r'\d+'),          # Integer or decimal number
-            ('ID',      r'[A-Za-z_]\w*'), # Identifiers
-            ('OP',      r'[+\-*/=]'),     # Arithmetic and assignment operators
-            ('NEWLINE', r'\n'),           # Line endings
-            ('SKIP',    r'[ \t]+'),       # Skip over spaces and tabs
-            ('MISMATCH',r'.'),            # Any other character
+            ('STRING',  r'"[^"]*"'),       # String literal
+            ('NUMBER',  r'\d+'),           # Integer or decimal number
+            ('ID',      r'[A-Za-z_]\w*'),  # Identifiers
+            ('OP',      r'[+\-*/=]'),      # Arithmetic and assignment operators
+            ('NEWLINE', r'\n'),            # Line endings
+            ('SKIP',    r'[ \t]+'),        # Skip over spaces and tabs
+            ('MISMATCH',r'.'),             # Any other character
         ]
         tok_regex = '|'.join(f'(?P<{pair[0]}>{pair[1]})' for pair in token_specification)
         get_token = re.compile(tok_regex).match
@@ -225,7 +377,7 @@ class MainWindow(QMainWindow):
             elif kind == 'SKIP':
                 pass
             elif kind == 'MISMATCH':
-                self.output_console.append(f'Error léxico: {value} inesperado en la línea {line_num}')
+                self.output_console.appendPlainText(f'Error léxico: {value} inesperado en la línea {line_num}')
                 return None
             else:
                 if kind == 'ID' and value in keywords:
@@ -236,7 +388,7 @@ class MainWindow(QMainWindow):
 
     def parser(self, tokens):
         if not tokens or tokens[0][0] != 'INICIO' or tokens[-1][0] != 'FIN':
-            self.output_console.append('Error sintáctico: el código debe comenzar con "inicio" y terminar con "fin".')
+            self.output_console.appendPlainText('Error sintáctico: el código debe comenzar con "inicio" y terminar con "fin".')
             return None
         
         i = 0
@@ -245,27 +397,31 @@ class MainWindow(QMainWindow):
         while i < len(tokens):
             kind, value = tokens[i]
             if kind == 'IMPRIMIR':
-                if i + 1 >= len(tokens) or tokens[i + 1][0] not in {'ID', 'NUMBER'}:
-                    self.output_console.append(f'Error sintáctico: se esperaba un identificador o número después de "imprimir" en la posición {i}')
+                if i + 1 >= len(tokens) or tokens[i + 1][0] not in {'ID', 'NUMBER', 'STRING'}:
+                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba un identificador, número o cadena después de "imprimir" en la posición {i}')
                     return None
                 node = QTreeWidgetItem([f'imprimir {tokens[i + 1][1]}'])
                 current_node.addChild(node)
                 i += 1
             elif kind == 'SI':
                 if i + 1 >= len(tokens) or tokens[i + 1][0] not in {'ID', 'NUMBER'}:
-                    self.output_console.append(f'Error sintáctico: se esperaba una condición después de "si" en la posición {i}')
+                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba una condición después de "si" en la posición {i}')
                     return None
-                if tokens[i + 2][0] != 'ENTONCES':
-                    self.output_console.append(f'Error sintáctico: se esperaba "entonces" en la posición {i+2}')
+                if i + 2 >= len(tokens) or tokens[i + 2][0] != 'ENTONCES':
+                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba "entonces" en la posición {i + 2}')
                     return None
                 condition_node = QTreeWidgetItem([f'si {tokens[i + 1][1]} == {tokens[i + 3][1]} entonces'])
                 current_node.addChild(condition_node)
                 current_node = condition_node
                 i += 2
                 while i < len(tokens) and tokens[i][0] != 'FIN_SI':
+                    kind, value = tokens[i]
+                    if kind == 'IMPRIMIR':
+                        node = QTreeWidgetItem([f'imprimir {tokens[i + 1][1]}'])
+                        current_node.addChild(node)
                     i += 1
                 if i >= len(tokens) or tokens[i][0] != 'FIN_SI':
-                    self.output_console.append(f'Error sintáctico: se esperaba "fin_si"')
+                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba "fin_si"')
                     return None
                 current_node = parse_tree
             i += 1
