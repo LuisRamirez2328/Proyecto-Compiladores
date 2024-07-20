@@ -64,7 +64,8 @@ class CodeEditor(QPlainTextEdit):
 
         self.updateLineNumberAreaWidth(0)
 
-        keywords = ["inicio", "fin", "funcion", "retornar", "var", "mientras", "si", "entonces", "fin_si", "sino", "para", "imprimir"]
+        keywords = ["inicio", "fin", "funcion", "fin_funcion", "retornar", "var", "mientras", "fin_mientras",
+                    "si", "entonces", "fin_si", "sino", "para", "fin_para", "imprimir"]
         self.completer = QCompleter(keywords, self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.setCompleter(self.completer)
