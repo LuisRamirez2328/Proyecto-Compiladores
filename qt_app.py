@@ -466,7 +466,7 @@ class MainWindow(QMainWindow):
             ('STRING',  r'"[^"]*"'),       # String literal
             ('NUMBER',  r'\d+'),           # Integer or decimal number
             ('ID',      r'[A-Za-z_]\w*'),  # Identifiers
-            ('OP',      r'[+\-*/=]'),      # Arithmetic and assignment operators
+            ('OP',      r'[+\-*/=<>]'),    # Arithmetic and comparison operators
             ('NEWLINE', r'\n'),            # Line endings
             ('SKIP',    r'[ \t]+'),        # Skip over spaces and tabs
             ('MISMATCH',r'.'),             # Any other character
@@ -548,6 +548,13 @@ class MainWindow(QMainWindow):
                 current_node = func_node
                 i += 1
             elif kind == 'FIN_FUNCION':
+                current_node = current_node.parent()
+            elif kind == 'PARA':
+                para_node = QTreeWidgetItem([f'para {tokens[i+1][1]} {tokens[i+2][1]} {tokens[i+3][1]}'])
+                current_node.addChild(para_node)
+                current_node = para_node
+                i += 3
+            elif kind == 'FIN_PARA':
                 current_node = current_node.parent()
             else:
                 current_node.addChild(QTreeWidgetItem([value]))
