@@ -64,8 +64,7 @@ class CodeEditor(QPlainTextEdit):
 
         self.updateLineNumberAreaWidth(0)
 
-        keywords = ["inicio", "fin", "funcion", "fin_funcion", "retornar", "var", "mientras", "fin_mientras",
-                    "si", "entonces", "fin_si", "sino", "para", "fin_para", "imprimir"]
+        keywords = ["inicio", "fin", "funcion", "retornar", "var", "mientras", "si", "entonces", "fin_si", "sino", "para", "imprimir"]
         self.completer = QCompleter(keywords, self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.setCompleter(self.completer)
@@ -287,6 +286,7 @@ class MainWindow(QMainWindow):
         code = self.code_editor.toPlainText()
         lines = code.split('\n')
         variables = {}
+        functions = {}
         i = 0
         while i < len(lines):
             line = lines[i].strip()
@@ -299,8 +299,18 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     self.output_console.appendPlainText(f'Error: valor inválido para la variable {var_name}')
                     return
+            elif line.startswith("funcion"):
+                func_name = line[len("funcion"):].strip()
+                func_body = []
+                i += 1
+                while not lines[i].strip().startswith("fin_funcion"):
+                    func_body.append(lines[i])
+                    i += 1
+                functions[func_name] = func_body
             elif line.startswith("imprimir"):
                 message = line[len("imprimir"):].strip()
+                if message.startswith('"') and message.endswith('"'):
+                    message = message[1:-1]
                 if message in variables:
                     self.output_console.appendPlainText(str(variables[message]))
                 else:
@@ -317,11 +327,38 @@ class MainWindow(QMainWindow):
                             inner_line = lines[i].strip()
                             if inner_line.startswith("imprimir"):
                                 message = inner_line[len("imprimir"):].strip()
+                                if message.startswith('"') and message.endswith('"'):
+                                    message = message[1:-1]
                                 if message in variables:
                                     self.output_console.appendPlainText(str(variables[message]))
                                 else:
                                     self.output_console.appendPlainText(message)
                             i += 1
+            elif line.startswith("para"):
+                parts = line[len("para"):].split(';')
+                if len(parts) != 3:
+                    self.output_console.appendPlainText('Error: sintaxis incorrecta en el bucle para')
+                    return
+                var_init, condition, increment = parts
+                var_name, var_value = var_init.split('=')
+                var_name = var_name.strip()
+                var_value = var_value.strip()
+                variables[var_name] = int(var_value)
+                exec(f"{var_name} = {var_value}", {}, variables)  # Ejecutar la inicialización de la variable
+                while eval(condition, {}, variables):
+                    i += 1
+                    while i < len(lines) and not lines[i].strip().startswith("fin_para"):
+                        inner_line = lines[i].strip()
+                        if inner_line.startswith("imprimir"):
+                            message = inner_line[len("imprimir"):].strip()
+                            if message.startswith('"') and message.endswith('"'):
+                                message = message[1:-1]
+                            if message in variables:
+                                self.output_console.appendPlainText(str(variables[message]))
+                            else:
+                                self.output_console.appendPlainText(message)
+                        i += 1
+                    exec(increment, {}, variables)  # Ejecutar el incremento de la variable
             i += 1
 
     def analyze_code(self):
@@ -405,26 +442,44 @@ class MainWindow(QMainWindow):
                 current_node.addChild(node)
                 i += 1
             elif kind == 'SI':
-                if i + 1 >= len(tokens) or tokens[i + 1][0] not in {'ID', 'NUMBER'}:
-                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba una condición después de "si" en la posición {i}')
+                condition = []
+                i += 1
+                while i < len(tokens) and tokens[i][0] != 'ENTONCES':
+                    condition.append(tokens[i][1])
+                    i += 1
+                if i >= len(tokens) or tokens[i][0] != 'ENTONCES':
+                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba "entonces" después de la condición del si')
                     return None
-                if i + 2 >= len(tokens) or tokens[i + 2][0] != 'ENTONCES':
-                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba "entonces" en la posición {i + 2}')
-                    return None
-                condition_node = QTreeWidgetItem([f'si {tokens[i + 1][1]} == {tokens[i + 3][1]} entonces'])
+                condition_str = ' '.join(condition)
+                condition_node = QTreeWidgetItem([f'si {condition_str} entonces'])
                 current_node.addChild(condition_node)
                 current_node = condition_node
-                i += 2
-                while i < len(tokens) and tokens[i][0] != 'FIN_SI':
-                    kind, value = tokens[i]
-                    if kind == 'IMPRIMIR':
-                        node = QTreeWidgetItem([f'imprimir {tokens[i + 1][1]}'])
-                        current_node.addChild(node)
+                i += 1
+            elif kind == 'FIN_SI':
+                current_node = current_node.parent()
+            elif kind == 'SINO':
+                sino_node = QTreeWidgetItem(["sino"])
+                current_node.parent().addChild(sino_node)
+                current_node = sino_node
+            elif kind == 'VAR':
+                var_node = QTreeWidgetItem(['var'])
+                current_node.addChild(var_node)
+                i += 1
+                declaration = []
+                while i < len(tokens) and tokens[i][0] != 'NEWLINE':
+                    declaration.append(tokens[i][1])
                     i += 1
-                if i >= len(tokens) or tokens[i][0] != 'FIN_SI':
-                    self.output_console.appendPlainText(f'Error sintáctico: se esperaba "fin_si"')
-                    return None
-                current_node = parse_tree
+                var_node.addChild(QTreeWidgetItem([' '.join(declaration)]))
+            elif kind == 'FUNCION':
+                func_name = tokens[i + 1][1]
+                func_node = QTreeWidgetItem([f'funcion {func_name}'])
+                current_node.addChild(func_node)
+                current_node = func_node
+                i += 1
+            elif kind == 'FIN_FUNCION':
+                current_node = current_node.parent()
+            else:
+                current_node.addChild(QTreeWidgetItem([value]))
             i += 1
         return parse_tree
 
