@@ -471,7 +471,7 @@ class MainWindow(QMainWindow):
             ('SKIP',    r'[ \t]+'),        # Skip over spaces and tabs
             ('MISMATCH',r'.'),             # Any other character
         ]
-        tok_regex = '|'.join(f'(?P<{pair[0]}>#{pair[1]})' for pair in token_specification)
+        tok_regex = '|'.join(f'(?P<{pair[0]}>{pair[1]})' for pair in token_specification)
         get_token = re.compile(tok_regex).match
         line_num = 1
         line_start = 0
@@ -552,6 +552,7 @@ class MainWindow(QMainWindow):
             else:
                 current_node.addChild(QTreeWidgetItem([value]))
             i += 1
+        parse_tree.addChild(QTreeWidgetItem(["fin"]))
         return parse_tree
 
     def semantic_analyzer(self, parse_tree):
