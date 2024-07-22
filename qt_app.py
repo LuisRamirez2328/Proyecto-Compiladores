@@ -183,6 +183,62 @@ class CodeEditor(QPlainTextEdit):
         tc.select(QTextCursor.WordUnderCursor)
         return tc.selectedText()
 
+def validar_codigo(codigo):
+    keywords = ["inicio", "fin", "funcion", "retornar", "var", "mientras", "si", "entonces", "fin_si", "sino", "para", "imprimir"]
+    lines = codigo.split('\n')
+    in_function = False
+    
+    for line_num, line in enumerate(lines, start=1):
+        stripped_line = line.strip()
+        if stripped_line == "":
+            continue
+        
+        # Check for valid variable declaration
+        if stripped_line.startswith("var"):
+            if not re.match(r'^var\s+\w+\s*=\s*.+$', stripped_line):
+                return f"Error de sintaxis en la línea {line_num}: {stripped_line}"
+        
+        # Check for function definition
+        elif stripped_line.startswith("funcion"):
+            if not re.match(r'^funcion\s+\w+\s*\(.*\)\s*$', stripped_line):
+                return f"Error de sintaxis en la línea {line_num}: {stripped_line}"
+            in_function = True
+        
+        elif stripped_line.startswith("fin_funcion"):
+            if not in_function:
+                return f"Error de sintaxis en la línea {line_num}: {stripped_line}"
+            in_function = False
+        
+        # Check for valid print statement
+        elif stripped_line.startswith("imprimir"):
+            if not re.match(r'^imprimir\s+.+$', stripped_line):
+                return f"Error de sintaxis en la línea {line_num}: {stripped_line}"
+        
+        # Check for if statement
+        elif stripped_line.startswith("si"):
+            if not re.match(r'^si\s+.+\s+entonces\s*$', stripped_line):
+                return f"Error de sintaxis en la línea {line_num}: {stripped_line}"
+        
+        elif stripped_line.startswith("fin_si"):
+            pass
+        
+        elif stripped_line.startswith("sino"):
+            pass
+        
+        # Check for loop
+        elif stripped_line.startswith("para"):
+            if not re.match(r'^para\s+var\s+\w+\s*=\s*.+;\s*.+;\s*.+$', stripped_line):
+                return f"Error de sintaxis en la línea {line_num}: {stripped_line}"
+        
+        elif stripped_line.startswith("fin_para"):
+            pass
+        
+        # Ensure no invalid lines
+        elif not any(stripped_line.startswith(kw) for kw in keywords):
+            return f"Error de sintaxis en la línea {line_num}: {stripped_line}"
+    
+    return "El código es válido."
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -295,9 +351,9 @@ class MainWindow(QMainWindow):
                 var_name = var_name.strip()
                 var_value = var_value.strip()
                 try:
-                    variables[var_name] = int(var_value)
-                except ValueError:
-                    self.output_console.appendPlainText(f'Error: valor inválido para la variable {var_name}')
+                    variables[var_name] = eval(var_value, {}, variables)
+                except Exception as e:
+                    self.output_console.appendPlainText(f'Error: valor inválido para la variable {var_name} en la línea {i+1}')
                     return
             elif line.startswith("funcion"):
                 func_name = line[len("funcion"):].strip()
@@ -311,10 +367,13 @@ class MainWindow(QMainWindow):
                 message = line[len("imprimir"):].strip()
                 if message.startswith('"') and message.endswith('"'):
                     message = message[1:-1]
-                if message in variables:
-                    self.output_console.appendPlainText(str(variables[message]))
                 else:
-                    self.output_console.appendPlainText(message)
+                    try:
+                        message = eval(message, {}, variables)
+                    except Exception as e:
+                        self.output_console.appendPlainText(f'Error: expresión inválida en la línea {i+1}')
+                        return
+                self.output_console.appendPlainText(str(message))
             elif line.startswith("si"):
                 condition = line[len("si"):].strip().split("entonces")[0].strip()
                 if "==" in condition:
@@ -322,17 +381,20 @@ class MainWindow(QMainWindow):
                     var_name = var_name.strip()
                     value = value.strip()
                     i += 1
-                    if variables.get(var_name) == int(value):
+                    if variables.get(var_name) == eval(value, {}, variables):
                         while i < len(lines) and not lines[i].strip().startswith("fin_si"):
                             inner_line = lines[i].strip()
                             if inner_line.startswith("imprimir"):
                                 message = inner_line[len("imprimir"):].strip()
                                 if message.startswith('"') and message.endswith('"'):
                                     message = message[1:-1]
-                                if message in variables:
-                                    self.output_console.appendPlainText(str(variables[message]))
                                 else:
-                                    self.output_console.appendPlainText(message)
+                                    try:
+                                        message = eval(message, {}, variables)
+                                    except Exception as e:
+                                        self.output_console.appendPlainText(f'Error: expresión inválida en la línea {i+1}')
+                                        return
+                                self.output_console.appendPlainText(str(message))
                             i += 1
             elif line.startswith("para"):
                 parts = line[len("para"):].split(';')
@@ -343,7 +405,7 @@ class MainWindow(QMainWindow):
                 var_name, var_value = var_init.split('=')
                 var_name = var_name.strip()
                 var_value = var_value.strip()
-                variables[var_name] = int(var_value)
+                variables[var_name] = eval(var_value, {}, variables)
                 exec(f"{var_name} = {var_value}", {}, variables)  # Ejecutar la inicialización de la variable
                 while eval(condition, {}, variables):
                     i += 1
@@ -353,16 +415,25 @@ class MainWindow(QMainWindow):
                             message = inner_line[len("imprimir"):].strip()
                             if message.startswith('"') and message.endswith('"'):
                                 message = message[1:-1]
-                            if message in variables:
-                                self.output_console.appendPlainText(str(variables[message]))
                             else:
-                                self.output_console.appendPlainText(message)
+                                try:
+                                    message = eval(message, {}, variables)
+                                except Exception as e:
+                                    self.output_console.appendPlainText(f'Error: expresión inválida en la línea {i+1}')
+                                    return
+                            self.output_console.appendPlainText(str(message))
                         i += 1
                     exec(increment, {}, variables)  # Ejecutar el incremento de la variable
             i += 1
 
     def analyze_code(self):
         code = self.code_editor.toPlainText()
+        
+        # Validación de sintaxis completa
+        resultado_validacion = validar_codigo(code)
+        if "Error de sintaxis" in resultado_validacion:
+            self.status_bar.showMessage(resultado_validacion, 2000)
+            return
         
         # Análisis léxico
         tokens = self.lexer(code)
@@ -400,7 +471,7 @@ class MainWindow(QMainWindow):
             ('SKIP',    r'[ \t]+'),        # Skip over spaces and tabs
             ('MISMATCH',r'.'),             # Any other character
         ]
-        tok_regex = '|'.join(f'(?P<{pair[0]}>{pair[1]})' for pair in token_specification)
+        tok_regex = '|'.join(f'(?P<{pair[0]}>#{pair[1]})' for pair in token_specification)
         get_token = re.compile(tok_regex).match
         line_num = 1
         line_start = 0
